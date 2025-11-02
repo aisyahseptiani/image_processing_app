@@ -1,0 +1,1 @@
+lambda v: rotate_image(self.image, int(v * 3.6))
