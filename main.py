@@ -158,10 +158,9 @@ class ImageApp(tk.Tk):
         noise_menu.add_command(label="Impulse Noise", command=lambda: self._noise("s&p"))
         menubar.add_cascade(label="Noise", menu=noise_menu)
 
-        # ABOUT
         about_menu = tk.Menu(menubar, tearoff=0)
         about_menu.add_command(label="Info Tim Developer",
-                               command=lambda: messagebox.showinfo("About", "Tim Developer\nGithub: mimey09\..."))
+                               command=lambda: messagebox.showinfo("About", "Tim Developer\nGithub: mimey09"))
         menubar.add_cascade(label="About", menu=about_menu)
 
         self.config(menu=menubar)
