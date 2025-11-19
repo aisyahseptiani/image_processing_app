@@ -24,7 +24,7 @@ def pil_to_tk(img, maxsize=(900, 700)):
 class ImageApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Image Processing App (PCD)")
+        self.title("Image Processing App - Kelompok x")
         self.geometry("1200x820")
 
         self.image = None
@@ -161,7 +161,7 @@ class ImageApp(tk.Tk):
         # ABOUT
         about_menu = tk.Menu(menubar, tearoff=0)
         about_menu.add_command(label="Info Tim Developer",
-                               command=lambda: messagebox.showinfo("About", "Tim Developer\nGithub: ...\nYoutube: ..."))
+                               command=lambda: messagebox.showinfo("About", "Tim Developer\nGithub: mimey09\..."))
         menubar.add_cascade(label="About", menu=about_menu)
 
         self.config(menu=menubar)
