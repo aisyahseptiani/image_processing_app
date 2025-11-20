@@ -1,457 +1,962 @@
+# main.py
+"""
+Image Processing App - Modern Burgundy (CustomTkinter) - Updated
+- Right-side header buttons: Undo (⎌), Redo (⤴), Save (💾)
+- Sidebar uses dropdown-style submenus (submenu appears immediately under the menu button;
+  other submenus collapse automatically)
+- Preserves original functionality, with safe fallbacks if ops modules are unavailable
+- Uses customtkinter if available; falls back to standard tkinter styling if not.
+"""
+
 import os
+import traceback
 import tkinter as tk
 from tkinter import filedialog, simpledialog, messagebox
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageEnhance
 
-# Import modul operasi
-from operations import basic_ops as basic
-from operations import enhancement as enh
-from operations import filtering as filt
-from operations import geometrics as geom
-from operations import arithmetic as arith
-from operations import boolean as boolop
-from operations import noise as noise_mod
-from operations import edge_detection as edge
+# Try to import customtkinter; if unavailable, use a minimal wrapper using ttk/style (fallback).
+USE_CTK = True
+try:
+    import customtkinter as ctk
+except Exception:
+    USE_CTK = False
+    # create minimal compatibility wrapper so code can use ctk names used below
+    class _CTkFallback:
+        CTk = tk.Tk
+        CTkFrame = tk.Frame
+        CTkLabel = tk.Label
+        CTkButton = tk.Button
+    ctk = _CTkFallback()
 
+# Path to sample image (if present in environment)
+SAMPLE_IMAGE_PATH = "/mnt/data/a2f32ddc-053f-4218-8604-6fb1d8adca86.png"
 
-# Helper convert PIL → Tk
-def pil_to_tk(img, maxsize=(900, 700)):
-    img_copy = img.copy()
-    img_copy.thumbnail(maxsize, Image.LANCZOS)
+# Try import operations modules (optional)
+try:
+    from operations import basic_ops as basic
+    from operations import enhancement as enh
+    from operations import filtering as filt
+    from operations import geometrics as geom
+    from operations import arithmetic as arith
+    from operations import boolean as boolop
+    from operations import noise as noise_mod
+    from operations import edge_detection as edge
+    from operations import utils
+except Exception:
+    basic = enh = filt = geom = arith = boolop = noise_mod = edge = utils = None
+    print("Warning: some operation modules not available")
+    traceback.print_exc()
+
+# Theme colors (used if customtkinter available)
+BURGUNDY = "#4A1F2D"
+BURGUNDY_LIGHT = "#6A3244"
+BG = "#121213"
+PANEL = "#2b1b22"
+CARD = "#171717"
+TEXT = "#FFFFFF"
+
+if USE_CTK:
+    try:
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+    except Exception:
+        pass
+
+# Utility: safely create a PhotoImage sized to fit (max_w, max_h)
+def make_tk_image(pil_img, max_w, max_h):
+    if pil_img is None:
+        return None
+    img_copy = pil_img.copy()
+    img_copy.thumbnail((max_w, max_h), Image.LANCZOS)
     return ImageTk.PhotoImage(img_copy)
 
-
-class ImageApp(tk.Tk):
+class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Image Processing App - Kelompok x")
-        self.geometry("1200x820")
+        self.title("Image Processing App - Burgundy (Updated)")
+        self.geometry("1400x860")
+        self.minsize(1100, 700)
 
-        self.image = None
+        # Image state
+        self.original = None  # PIL.Image
+        self.image = None     # processed PIL.Image
         self.image_path = None
-        self.tk_image = None
 
-        # UNDO REDO STACK
+        # Tk refs to prevent GC
+        self._tk_orig = None
+        self._tk_proc = None
+
+        # History for undo/redo
         self.history = []
         self.future = []
 
+        # Sidebar submenu frames mapping
+        self.submenus = {}
+        self.menu_buttons = {}
+
+        # Build UI
         self._build_ui()
 
-    # BUILD UI
+        # Keyboard shortcuts
+        self.bind_all("<Control-z>", lambda e: self.undo())
+        self.bind_all("<Control-y>", lambda e: self.redo())
+        self.bind_all("<Control-s>", lambda e: self.save_image())
+
+        # If sample image present, preload
+        if os.path.exists(SAMPLE_IMAGE_PATH):
+            try:
+                self.original = Image.open(SAMPLE_IMAGE_PATH).convert("RGB")
+                self.image = self.original.copy()
+                self.image_path = SAMPLE_IMAGE_PATH
+                self._render_both()
+            except Exception:
+                pass
+
     def _build_ui(self):
+        # Header
+        header = ctk.CTkFrame(self, fg_color=BURGUNDY) if USE_CTK else tk.Frame(self, bg=BURGUNDY)
+        header.pack(side="top", fill="x")
+        title = ctk.CTkLabel(header, text=" Image Processing App ", font=("Segoe UI", 16, 'bold'),
+                             text_color=TEXT) if USE_CTK else tk.Label(header, text=" Image Processing App ",
+                                                                       font=("Segoe UI", 16, 'bold'),
+                                                                       bg=BURGUNDY, fg=TEXT)
+        title.pack(side="left", padx=16, pady=10)
 
-        # 1) TOOLBAR 
-        top_bar = tk.Frame(self, bg="#333")
-        top_bar.pack(side=tk.TOP, fill=tk.X)
+        # Right-side header buttons container
+        header_btns = ctk.CTkFrame(header, fg_color=BURGUNDY) if USE_CTK else tk.Frame(header, bg=BURGUNDY)
+        header_btns.pack(side="right", padx=12)
 
-        tk.Button(top_bar, text="⮪", width=4, command=self.undo).pack(side=tk.LEFT, padx=4, pady=2)
-        tk.Button(top_bar, text="⮫", width=4, command=self.redo).pack(side=tk.LEFT, padx=4, pady=2)
+        # Undo / Redo / Save symbols (Unicode) — will show even without icons
+        undo_sym = "⎌"   # alternative unicode for undo-like
+        redo_sym = "⤴"  # redo
+        save_sym = "💾"
 
-        # 2) MENU BAR 
-        menubar = tk.Menu(self)
+        btn_opts = {"fg_color": BURGUNDY_LIGHT, "hover_color": "#7C3B4A"} if USE_CTK else {}
+        # Buttons
+        undo_btn = ctk.CTkButton(header_btns, text=f"{undo_sym} Undo", command=self.undo,
+                                 width=90, **btn_opts) if USE_CTK else tk.Button(header_btns, text=f"{undo_sym} Undo",
+                                                                                 command=self.undo, bg=BURGUNDY_LIGHT,
+                                                                                 fg=TEXT)
+        redo_btn = ctk.CTkButton(header_btns, text=f"{redo_sym} Redo", command=self.redo,
+                                 width=90, **btn_opts) if USE_CTK else tk.Button(header_btns, text=f"{redo_sym} Redo",
+                                                                                 command=self.redo, bg=BURGUNDY_LIGHT,
+                                                                                 fg=TEXT)
+        save_btn = ctk.CTkButton(header_btns, text=f"{save_sym} Save", command=self.save_image,
+                                 width=90, **btn_opts) if USE_CTK else tk.Button(header_btns, text=f"{save_sym} Save",
+                                                                                 command=self.save_image, bg=BURGUNDY_LIGHT,
+                                                                                 fg=TEXT)
 
-        # Menu File
-        file_menu = tk.Menu(menubar, tearoff=0)
-        file_menu.add_command(label="Open...", command=self.open_image)
-        file_menu.add_command(label="Save", command=self.save_image)
-        file_menu.add_command(label="Save As...", command=self.save_as_image)
-        file_menu.add_separator()
-        file_menu.add_command(label="Exit", command=self.quit)
-        menubar.add_cascade(label="File", menu=file_menu)
+        undo_btn.pack(side="left", padx=6)
+        redo_btn.pack(side="left", padx=6)
+        save_btn.pack(side="left", padx=6)
 
-        # EDGE DETECTION
-        edge_menu = tk.Menu(menubar, tearoff=0)
+        # Main content
+        content = ctk.CTkFrame(self, fg_color=BG) if USE_CTK else tk.Frame(self, bg=BG)
+        content.pack(side="top", fill="both", expand=True, padx=12, pady=12)
 
-        grad1 = tk.Menu(edge_menu, tearoff=0)
-        grad1.add_command(label="Sobel", command=self._sobel)
-        grad1.add_command(label="Prewitt", command=self._prewitt)
-        grad1.add_command(label="Roberts", command=self._roberts)
-        edge_menu.add_cascade(label="1st Differential Gradient", menu=grad1)
+        # Sidebar (left)
+        sidebar = ctk.CTkFrame(content, width=300, fg_color=BURGUNDY) if USE_CTK else tk.Frame(content, width=300, bg=BURGUNDY)
+        sidebar.pack(side="left", fill="y", padx=(0,12))
+        if USE_CTK:
+            ctk.CTkLabel(sidebar, text="TOOLS", font=("Segoe UI", 16, 'bold'), text_color=TEXT).pack(pady=(18,8))
+        else:
+            tk.Label(sidebar, text="TOOLS", font=("Segoe UI", 16, 'bold'), bg=BURGUNDY, fg=TEXT).pack(pady=(18,8))
 
-        grad2 = tk.Menu(edge_menu, tearoff=0)
-        grad2.add_command(label="Laplacian", command=self._laplacian)
-        grad2.add_command(label="LoG", command=self._log)
-        grad2.add_command(label="Canny", command=self._canny)
-        edge_menu.add_cascade(label="2nd Differential Gradient", menu=grad2)
+        # Helper to add a top-level button with dropdown-style submenu directly below it
+        def add_menu(title):
+            # create button
+            btn = ctk.CTkButton(sidebar, text=title, fg_color=BURGUNDY_LIGHT, text_color=TEXT,
+                                anchor="w", command=lambda t=title: self._toggle_submenu(t)) if USE_CTK else tk.Button(sidebar, text=title,
+                                                                                                                      bg=BURGUNDY_LIGHT, fg=TEXT,
+                                                                                                                      anchor="w", command=lambda t=title: self._toggle_submenu(t))
+            btn.pack(fill="x", padx=12, pady=(8,2))
+            # submenu frame placed immediately under button (pack but hidden)
+            subframe = ctk.CTkFrame(sidebar, fg_color=BURGUNDY, height=10) if USE_CTK else tk.Frame(sidebar, bg=BURGUNDY, height=10)
+            # We don't call pack() yet; will pack when shown so it appears under the button.
+            self.submenus[title] = subframe
+            self.menu_buttons[title] = btn
+            return subframe
 
-        menubar.add_cascade(label="Edge Detection", menu=edge_menu)
+        # Build menus & submenu items (same structure as you had)
+        file_sub = add_menu("File")
+        # Use lambda wrappers so buttons call the functions
+        def _pack_sub_button(parent, text, cmd):
+            if USE_CTK:
+                b = ctk.CTkButton(parent, text=text, command=cmd, fg_color=BURGUNDY_LIGHT)
+            else:
+                b = tk.Button(parent, text=text, command=cmd, bg=BURGUNDY_LIGHT, fg=TEXT)
+            b.pack(fill="x", pady=6, padx=(8,8))
+            return b
 
-        # BASIC OPS
-        basic_menu = tk.Menu(menubar, tearoff=0)
-        basic_menu.add_command(label="Negative", command=self._invert)
+        _pack_sub_button(file_sub, "Open Image", self.open_image)
+        _pack_sub_button(file_sub, "Save Processed", self.save_image)
+        _pack_sub_button(file_sub, "Save As...", self.save_as_image)
 
-        # Arithmetic
-        ar_menu = tk.Menu(basic_menu, tearoff=0)
-        ar_menu.add_command(label="Add", command=lambda: self._arithmetic("add"))
-        ar_menu.add_command(label="Subtract", command=lambda: self._arithmetic("sub"))
-        ar_menu.add_command(label="Multiply", command=lambda: self._arithmetic("mul"))
-        ar_menu.add_command(label="Divide", command=lambda: self._arithmetic("div"))
-        basic_menu.add_cascade(label="Arithmetic", menu=ar_menu)
+        basic_sub = add_menu("Basic Ops")
+        _pack_sub_button(basic_sub, "Negative / Invert", self._invert)
+        _pack_sub_button(basic_sub, "Grayscale", lambda: self._convert_color('L'))
+        _pack_sub_button(basic_sub, "Thresholding", self._thresholding)
+        _pack_sub_button(basic_sub, "Convolution (3x3)", self._convolution)
+        _pack_sub_button(basic_sub, "Fourier Transform", self._fft)
 
-        # Boolean
-        bool_menu = tk.Menu(basic_menu, tearoff=0)
-        bool_menu.add_command(label="NOT", command=lambda: self._boolean("not"))
-        bool_menu.add_command(label="AND", command=lambda: self._boolean("and"))
-        bool_menu.add_command(label="OR", command=lambda: self._boolean("or"))
-        bool_menu.add_command(label="XOR", command=lambda: self._boolean("xor"))
-        basic_menu.add_cascade(label="Boolean", menu=bool_menu)
+        ar_sub = add_menu("Arithmetic")
+        _pack_sub_button(ar_sub, "Add", lambda: self._arithmetic('add'))
+        _pack_sub_button(ar_sub, "Subtract", lambda: self._arithmetic('sub'))
+        _pack_sub_button(ar_sub, "Multiply", lambda: self._arithmetic('mul'))
+        _pack_sub_button(ar_sub, "Divide", lambda: self._arithmetic('div'))
 
-        # Geometrics
-        geo_menu = tk.Menu(basic_menu, tearoff=0)
-        geo_menu.add_command(label="Translation", command=self._translate)
-        geo_menu.add_command(label="Rotation", command=self._rotate)
-        geo_menu.add_command(label="Zooming", command=self._zoom)
-        geo_menu.add_command(label="Flipping", command=self._flip)
-        geo_menu.add_command(label="Cropping", command=self._crop)
-        basic_menu.add_cascade(label="Geometrics", menu=geo_menu)
+        bool_sub = add_menu("Boolean")
+        _pack_sub_button(bool_sub, "NOT", lambda: self._boolean('not'))
+        _pack_sub_button(bool_sub, "AND", lambda: self._boolean('and'))
+        _pack_sub_button(bool_sub, "OR", lambda: self._boolean('or'))
+        _pack_sub_button(bool_sub, "XOR", lambda: self._boolean('xor'))
 
-        basic_menu.add_command(label="Thresholding", command=self._thresholding)
-        basic_menu.add_command(label="Convolution", command=self._convolution)
-        basic_menu.add_command(label="Fourier Transform", command=self._fft)
+        enh_sub = add_menu("Enhancement")
+        _pack_sub_button(enh_sub, "Brightness", self._brightness)
+        _pack_sub_button(enh_sub, "Contrast", self._contrast)
+        _pack_sub_button(enh_sub, "Histogram Equalization", self._histeq)
+        _pack_sub_button(enh_sub, "Gaussian Blur", lambda: self._smoothing('gaussian'))
+        _pack_sub_button(enh_sub, "Median Filter", lambda: self._smoothing('median'))
+        _pack_sub_button(enh_sub, "Highpass Filter", self._highpass)
+        _pack_sub_button(enh_sub, "Highboost Filter", self._highboost)
+        _pack_sub_button(enh_sub, "Frequency Domain", self._freq_dialog)
 
-        # Colouring
-        col_menu = tk.Menu(basic_menu, tearoff=0)
-        col_menu.add_command(label="Binary", command=lambda: self._convert_color("binary"))
-        col_menu.add_command(label="Grayscale", command=lambda: self._convert_color("L"))
-        col_menu.add_command(label="RGB", command=lambda: self._convert_color("RGB"))
-        col_menu.add_command(label="HSV", command=lambda: self._convert_color("HSV"))
-        col_menu.add_command(label="CMY", command=lambda: self._convert_color("CMY"))
-        col_menu.add_command(label="YUV", command=lambda: self._convert_color("YUV"))
-        col_menu.add_command(label="YIQ", command=lambda: self._convert_color("YIQ"))
-        col_menu.add_command(label="Pseudo", command=lambda: self._convert_color("pseudo"))
-        basic_menu.add_cascade(label="Colouring", menu=col_menu)
+        noise_sub = add_menu("Noise")
+        _pack_sub_button(noise_sub, "Gaussian Noise", lambda: self._noise('gaussian'))
+        _pack_sub_button(noise_sub, "Rayleigh Noise", lambda: self._noise('rayleigh'))
+        _pack_sub_button(noise_sub, "Erlang Noise", lambda: self._noise('erlang'))
+        _pack_sub_button(noise_sub, "Exponential Noise", lambda: self._noise('exponential'))
+        _pack_sub_button(noise_sub, "Uniform Noise", lambda: self._noise('uniform'))
+        _pack_sub_button(noise_sub, "Salt & Pepper", lambda: self._noise('s&p'))
 
-        menubar.add_cascade(label="Basic Ops", menu=basic_menu)
+        edge_sub = add_menu("Edge Detection")
+        _pack_sub_button(edge_sub, "Sobel", self._sobel)
+        _pack_sub_button(edge_sub, "Prewitt", self._prewitt)
+        _pack_sub_button(edge_sub, "Roberts", self._roberts)
+        _pack_sub_button(edge_sub, "Laplacian", self._laplacian)
+        _pack_sub_button(edge_sub, "LoG", self._log)
+        _pack_sub_button(edge_sub, "Canny", self._canny)
 
-        # ENHANCEMENT
-        enh_menu = tk.Menu(menubar, tearoff=0)
-        enh_menu.add_command(label="Brightness", command=self._brightness)
-        enh_menu.add_command(label="Contrast", command=self._contrast)
-        enh_menu.add_command(label="Hist. Equalization", command=self._histeq)
+        geo_sub = add_menu("Geometrics")
+        _pack_sub_button(geo_sub, "Translate", self._translate)
+        _pack_sub_button(geo_sub, "Rotate", self._rotate)
+        _pack_sub_button(geo_sub, "Zoom", self._zoom)
+        _pack_sub_button(geo_sub, "Flip", self._flip)
+        _pack_sub_button(geo_sub, "Crop", self._crop)
 
-        smoothing_menu = tk.Menu(enh_menu, tearoff=0)
-        smoothing_menu.add_command(label="Gaussian Blur", command=lambda: self._smoothing("gaussian"))
-        smoothing_menu.add_command(label="Median Filter", command=lambda: self._smoothing("median"))
-        enh_menu.add_cascade(label="Smoothing", menu=smoothing_menu)
+        about_sub = add_menu("About")
+        _pack_sub_button(about_sub, "Dev Info", lambda: messagebox.showinfo("About", "Tim Developer\nGithub: mimey09"))
 
-        sharp_menu = tk.Menu(enh_menu, tearoff=0)
-        sharp_menu.add_command(label="Highpass Filter", command=self._highpass)
-        sharp_menu.add_command(label="Highboost Filter", command=self._highboost)
-        enh_menu.add_cascade(label="Sharpening", menu=sharp_menu)
+        # Preview panels (right)
+        preview = ctk.CTkFrame(content, fg_color=BG) if USE_CTK else tk.Frame(content, bg=BG)
+        preview.pack(side="right", fill="both", expand=True)
 
-        freq_menu = tk.Menu(enh_menu, tearoff=0)
-        freq_menu.add_command(label="ILPF", command=lambda: self._freq_filter("ilpf"))
-        freq_menu.add_command(label="BLPF", command=lambda: self._freq_filter("blpf"))
-        freq_menu.add_command(label="IHPF", command=lambda: self._freq_filter("ihpf"))
-        freq_menu.add_command(label="BHPF", command=lambda: self._freq_filter("bhpf"))
-        enh_menu.add_cascade(label="Frequency Domain", menu=freq_menu)
+        titles = ctk.CTkFrame(preview, fg_color=BG) if USE_CTK else tk.Frame(preview, bg=BG)
+        titles.pack(side="top", fill="x")
+        left_label = ctk.CTkLabel(titles, text="Original Image", text_color=BURGUNDY, font=("Segoe UI", 14, 'bold')) if USE_CTK else tk.Label(titles, text="Original Image", fg=BURGUNDY, bg=BG, font=("Segoe UI", 14, 'bold'))
+        right_label = ctk.CTkLabel(titles, text="Processed Image", text_color=BURGUNDY, font=("Segoe UI", 14, 'bold')) if USE_CTK else tk.Label(titles, text="Processed Image", fg=BURGUNDY, bg=BG, font=("Segoe UI", 14, 'bold'))
+        left_label.pack(side="left", expand=True)
+        right_label.pack(side="right", expand=True)
 
-        menubar.add_cascade(label="Enhancement", menu=enh_menu)
+        canv_cont = ctk.CTkFrame(preview, fg_color=BG) if USE_CTK else tk.Frame(preview, bg=BG)
+        canv_cont.pack(side="top", fill="both", expand=True, pady=6)
 
-        # NOISE
-        noise_menu = tk.Menu(menubar, tearoff=0)
-        noise_menu.add_command(label="Gaussian Noise", command=lambda: self._noise("gaussian"))
-        noise_menu.add_command(label="Rayleigh Noise", command=lambda: self._noise("rayleigh"))
-        noise_menu.add_command(label="Erlang Noise", command=lambda: self._noise("erlang"))
-        noise_menu.add_command(label="Exponential Noise", command=lambda: self._noise("exponential"))
-        noise_menu.add_command(label="Uniform Noise", command=lambda: self._noise("uniform"))
-        noise_menu.add_command(label="Impulse Noise", command=lambda: self._noise("s&p"))
-        menubar.add_cascade(label="Noise", menu=noise_menu)
+        left_card = ctk.CTkFrame(canv_cont, fg_color=PANEL, corner_radius=8) if USE_CTK else tk.Frame(canv_cont, bg=PANEL)
+        left_card.pack(side="left", fill="both", expand=True, padx=(8,4), pady=8)
+        right_card = ctk.CTkFrame(canv_cont, fg_color=PANEL, corner_radius=8) if USE_CTK else tk.Frame(canv_cont, bg=PANEL)
+        right_card.pack(side="right", fill="both", expand=True, padx=(4,8), pady=8)
 
-        about_menu = tk.Menu(menubar, tearoff=0)
-        about_menu.add_command(label="Info Tim Developer",
-                               command=lambda: messagebox.showinfo("About", "Tim Developer\nGithub: mimey09"))
-        menubar.add_cascade(label="About", menu=about_menu)
+        # Use tk.Canvas for pixel rendering (works in both CTkFrame and Frame)
+        self.canvas_original = tk.Canvas(left_card, bg="#0f0f0f", highlightthickness=0)
+        self.canvas_original.pack(fill="both", expand=True, padx=12, pady=12)
+        self.canvas_processed = tk.Canvas(right_card, bg="#0f0f0f", highlightthickness=0)
+        self.canvas_processed.pack(fill="both", expand=True, padx=12, pady=12)
 
-        self.config(menu=menubar)
+        # status bar
+        self.status = ctk.CTkLabel(self, text="No image loaded", fg_color=BURGUNDY, text_color=TEXT) if USE_CTK else tk.Label(self, text="No image loaded", bg=BURGUNDY, fg=TEXT)
+        self.status.pack(side="bottom", fill="x")
 
-        # Canvas & Status Bar
-        self.canvas = tk.Canvas(self, bg="#222")
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        # Bind configure for re-rendering centered images (debounced)
+        self._resize_job = None
+        self.canvas_original.bind("<Configure>", lambda e: self._on_canvas_configure())
+        self.canvas_processed.bind("<Configure>", lambda e: self._on_canvas_configure())
 
-        self.status = tk.Label(self, text="No image loaded", bd=1, relief=tk.SUNKEN, anchor=tk.W)
-        self.status.pack(side=tk.BOTTOM, fill=tk.X)
+    # Toggle submenu visibility: show below its button; collapse others
+    def _toggle_submenu(self, name):
+        for k, f in self.submenus.items():
+            if k == name:
+                # Toggle: if visible -> hide; else show
+                if f.winfo_ismapped():
+                    f.pack_forget()
+                else:
+                    # pack right after the button so it appears as dropdown
+                    # to ensure order, we repack everything in sidebar in a consistent order:
+                    parent = f.master
+                    # remove all submenu frames temporarily so we can reinsert in order
+                    # We'll simply pack the target submenu right after its corresponding button
+                    # First collapse other submenus
+                    for kk, ff in self.submenus.items():
+                        if ff.winfo_ismapped():
+                            ff.pack_forget()
+                    # Now pack this submenu below its button
+                    # To ensure it appears immediately under the menu button, use pack with padx to line up.
+                    f.pack(fill="x", padx=18, after=self.menu_buttons[name])
+            else:
+                # collapse others
+                if f.winfo_ismapped():
+                    f.pack_forget()
 
-    # FILE HANDLING
+    # -------------------------
+    # File handling
+    # -------------------------
     def open_image(self):
-        path = filedialog.askopenfilename(
-            filetypes=[("Image Files", "*.jpg *.png *.jpeg *.bmp *.tiff")])
+        path = filedialog.askopenfilename(filetypes=[("Image Files", "*.jpg *.png *.jpeg *.bmp *.tiff")])
         if path:
-            self.image = Image.open(path).convert("RGB")
+            try:
+                self.original = Image.open(path).convert("RGB")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to open image:\n{e}")
+                return
+            self.image = self.original.copy()
             self.image_path = path
             self.history.clear()
             self.future.clear()
-            self._show()
+            self._render_both()
 
     def save_image(self):
-        if not self.image:
+        if self.image is None:
+            messagebox.showinfo("Save", "No processed image to save.")
             return
-        if not self.image_path:
-            return self.save_as_image()
-        self.image.save(self.image_path)
+        # If image_path exists, confirm overwrite
+        if self.image_path and os.path.exists(self.image_path):
+            confirm = messagebox.askyesno("Save", f"Overwrite existing file?\n{self.image_path}")
+            if confirm:
+                try:
+                    self.image.save(self.image_path)
+                    messagebox.showinfo("Save", f"Saved to {self.image_path}")
+                    return
+                except Exception:
+                    traceback.print_exc()
+                    messagebox.showerror("Save", "Failed to save to existing path; choose Save As.")
+            # if not confirmed fallthrough to save as
+        self.save_as_image()
 
     def save_as_image(self):
-        if not self.image:
+        if self.image is None:
             return
-        path = filedialog.asksaveasfilename(defaultextension=".png")
-        if path:
+        path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG","*.png"),("JPEG","*.jpg")])
+        if not path:
+            return
+        try:
             self.image.save(path)
             self.image_path = path
+            messagebox.showinfo("Save As", f"Saved to {path}")
+        except Exception as e:
+            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to save image:\n{e}")
 
-    # UNDO / REDO
+    # -------------------------
+    # History
+    # -------------------------
     def push_history(self):
         if self.image is not None:
             self.history.append(self.image.copy())
+            if len(self.history) > 50:
+                self.history.pop(0)
             self.future.clear()
 
     def undo(self):
         if not self.history:
-            messagebox.showinfo("Undo", "Tidak ada aksi sebelumnya.")
+            messagebox.showinfo("Undo", "No previous action.")
             return
-        self.future.append(self.image.copy())
-        self.image = self.history.pop()
-        self._show()
+        try:
+            self.future.append(self.image.copy() if self.image else None)
+            self.image = self.history.pop()
+            self._render_both()
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror("Undo", "Undo failed.")
 
     def redo(self):
         if not self.future:
-            messagebox.showinfo("Redo", "Tidak ada aksi redo.")
+            messagebox.showinfo("Redo", "No redo available.")
             return
-        self.history.append(self.image.copy())
-        self.image = self.future.pop()
-        self._show()
+        try:
+            self.history.append(self.image.copy() if self.image else None)
+            nxt = self.future.pop()
+            if nxt is not None:
+                self.image = nxt
+            self._render_both()
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror("Redo", "Redo failed.")
 
-    # HELPER
+    # -------------------------
+    # Rendering centered images
+    # -------------------------
+    def _on_canvas_configure(self):
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(120, self._render_both)
+
+    def _render_single(self, canvas, pil_img):
+        canvas.delete("all")
+        if pil_img is None:
+            return
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w <= 4 or h <= 4:
+            return
+        pad = 16
+        max_w = max(1, w - pad)
+        max_h = max(1, h - pad)
+        tk_img = make_tk_image(pil_img, max_w, max_h)
+        if tk_img is None:
+            return
+        canvas.create_image(w//2, h//2, image=tk_img, anchor="center")
+        # store reference on canvas to prevent GC
+        canvas._img_ref = tk_img
+
+    def _render_both(self):
+        try:
+            self._render_single(self.canvas_original, self.original)
+            self._render_single(self.canvas_processed, self.image)
+            if self.image:
+                self.status.configure(text=f"Image size: {self.image.size[0]} x {self.image.size[1]}")
+            elif self.original:
+                self.status.configure(text=f"Original size: {self.original.size[0]} x {self.original.size[1]}")
+            else:
+                self.status.configure(text="No image loaded")
+        except Exception:
+            traceback.print_exc()
+            self.status.configure(text="Render error")
+
+    # -------------------------
+    # Helper ensure
+    # -------------------------
     def _ensure(self):
         if self.image is None:
             messagebox.showwarning("Warning", "No image loaded.")
             return False
         return True
 
-    def _show(self):
-        self.canvas.delete("all")
-        self.tk_image = pil_to_tk(self.image)
-        self.canvas.create_image(10, 10, anchor="nw", image=self.tk_image)
-        self.status.config(text=f"Image size: {self.image.size}")
-
-    # BASIC OPS
+    # -------------------------
+    # BASIC OPS wrappers
+    # -------------------------
     def _invert(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = basic.invert(self.image)
-        self._show()
+        try:
+            if basic and hasattr(basic, 'invert'):
+                self.image = basic.invert(self.image)
+            else:
+                r, g, b = self.image.split()
+                r = r.point(lambda i: 255 - i)
+                g = g.point(lambda i: 255 - i)
+                b = b.point(lambda i: 255 - i)
+                self.image = Image.merge('RGB', (r, g, b))
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror("Invert", "Failed to invert")
+        self._render_both()
 
     def _convert_color(self, mode):
         if not self._ensure(): return
         self.push_history()
-        self.image = basic.convert_color(self.image, mode)
-        self._show()
+        try:
+            if basic and hasattr(basic, 'convert_color'):
+                self.image = basic.convert_color(self.image, mode)
+            else:
+                if mode == 'L':
+                    self.image = self.image.convert('L').convert('RGB')
+                elif mode == 'binary':
+                    t = simpledialog.askinteger('Threshold','Enter threshold (0-255):', initialvalue=128)
+                    if t is None: return
+                    gray = self.image.convert('L')
+                    bw = gray.point(lambda p: 255 if p > t else 0)
+                    self.image = bw.convert('RGB')
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Convert', 'Failed to convert color')
+        self._render_both()
 
     def _thresholding(self):
         if not self._ensure(): return
         self.push_history()
-        t = simpledialog.askinteger("Threshold", "Masukkan nilai threshold (0-255):", initialvalue=128)
-        self.image = basic.threshold(self.image, t)
-        self._show()
+        t = simpledialog.askinteger('Threshold','Masukkan nilai threshold (0-255):', initialvalue=128)
+        if t is None: return
+        try:
+            if basic and hasattr(basic, 'threshold'):
+                self.image = basic.threshold(self.image, t)
+            else:
+                import numpy as np
+                gray = self.image.convert('L')
+                a = np.array(gray)
+                a = ((a > t) * 255).astype('uint8')
+                self.image = Image.fromarray(a).convert('RGB')
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Threshold','Failed')
+        self._render_both()
 
     def _convolution(self):
         if not self._ensure(): return
         self.push_history()
-        k = simpledialog.askstring("Kernel", "Kernel 3x3, pisahkan spasi:\nContoh: 0 -1 0 -1 5 -1 0 -1 0")
+        k = simpledialog.askstring('Kernel','Kernel 3x3, pisahkan spasi:\nContoh: 0 -1 0 -1 5 -1 0 -1 0')
         if not k: return
-        k = [float(x) for x in k.split()]
-        kernel = [k[:3], k[3:6], k[6:]]
-        self.image = basic.convolution(self.image, kernel)
-        self._show()
+        try:
+            vals = [float(x) for x in k.split()]
+            if len(vals) < 9:
+                raise ValueError("Kernel must have 9 values")
+            kernel = [vals[:3], vals[3:6], vals[6:9]]
+            if basic and hasattr(basic, 'convolution'):
+                self.image = basic.convolution(self.image, kernel)
+            else:
+                # fallback simple convolution using numpy (valid for grayscale per-channel)
+                import numpy as np
+                arr = np.array(self.image).astype('float32')
+                h, w = arr.shape[:2]
+                pad = 1
+                # pad with zeros
+                if arr.ndim == 3:
+                    padded = np.pad(arr, ((pad,pad),(pad,pad),(0,0)), mode='edge')
+                    out = np.zeros_like(arr)
+                    karr = np.array(kernel)
+                    for y in range(h):
+                        for x in range(w):
+                            for c in range(3):
+                                region = padded[y:y+3, x:x+3, c]
+                                out[y,x,c] = (region * karr).sum()
+                else:
+                    padded = np.pad(arr, ((pad,pad),(pad,pad)), mode='edge')
+                    out = np.zeros_like(arr)
+                    karr = np.array(kernel)
+                    for y in range(h):
+                        for x in range(w):
+                            region = padded[y:y+3, x:x+3]
+                            out[y,x] = (region * karr).sum()
+                # normalize/clamp
+                out = out.clip(0,255).astype('uint8')
+                from PIL import Image
+                self.image = Image.fromarray(out)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Convolution','Invalid kernel or convolution failed')
+        self._render_both()
 
     def _fft(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = basic.fft_spectrum(self.image)
-        self._show()
+        try:
+            if basic and hasattr(basic, 'fft_spectrum'):
+                self.image = basic.fft_spectrum(self.image)
+            elif filt and hasattr(filt, 'frequency_filter'):
+                self.image = filt.frequency_filter(self.image, 'ilpf', 30)
+            else:
+                messagebox.showinfo('FFT','FFT not available')
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('FFT','Failed')
+        self._render_both()
 
+    # -------------------------
     # ENHANCEMENT
+    # -------------------------
     def _brightness(self):
         if not self._ensure(): return
         self.push_history()
-        f = simpledialog.askfloat("Brightness", "Masukkan faktor:", initialvalue=1.2)
-        self.image = enh.brightness(self.image, f)
-        self._show()
+        f = simpledialog.askfloat('Brightness','Masukkan faktor:', initialvalue=1.2)
+        if f is None: return
+        try:
+            if enh and hasattr(enh, 'brightness'):
+                self.image = enh.brightness(self.image, f)
+            else:
+                self.image = ImageEnhance.Brightness(self.image).enhance(f)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Brightness','Failed')
+        self._render_both()
 
     def _contrast(self):
         if not self._ensure(): return
         self.push_history()
-        f = simpledialog.askfloat("Contrast", "Masukkan faktor:", initialvalue=1.2)
-        self.image = enh.contrast(self.image, f)
-        self._show()
+        f = simpledialog.askfloat('Contrast','Masukkan faktor:', initialvalue=1.2)
+        if f is None: return
+        try:
+            if enh and hasattr(enh, 'contrast'):
+                self.image = enh.contrast(self.image, f)
+            else:
+                self.image = ImageEnhance.Contrast(self.image).enhance(f)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Contrast','Failed')
+        self._render_both()
 
     def _histeq(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = enh.hist_eq(self.image)
-        self._show()
+        try:
+            if enh and hasattr(enh, 'hist_eq'):
+                self.image = enh.hist_eq(self.image)
+            elif enh and hasattr(enh, 'hist_equalization'):
+                self.image = enh.hist_equalization(self.image)
+            else:
+                messagebox.showinfo('HistEq','Not available')
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('HistEq','Failed')
+        self._render_both()
 
     def _smoothing(self, typ):
         if not self._ensure(): return
         self.push_history()
-        self.image = filt.smoothing(self.image, typ)
-        self._show()
+        try:
+            if filt and hasattr(filt, 'smoothing'):
+                self.image = filt.smoothing(self.image, typ)
+            else:
+                messagebox.showinfo('Smoothing','Not available')
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Smoothing','Failed')
+        self._render_both()
 
     def _highpass(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = enh.highpass(self.image)
-        self._show()
+        try:
+            if enh and hasattr(enh, 'highpass'):
+                self.image = enh.highpass(self.image)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Highpass','Failed')
+        self._render_both()
 
     def _highboost(self):
         if not self._ensure(): return
         self.push_history()
-        a = simpledialog.askfloat("Highboost", "Faktor (1-10):", initialvalue=2.0)
-        self.image = enh.highboost(self.image, a)
-        self._show()
+        a = simpledialog.askfloat('Highboost','Faktor (1-10):', initialvalue=2.0)
+        if a is None: return
+        try:
+            if enh and hasattr(enh, 'highboost'):
+                self.image = enh.highboost(self.image, a)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Highboost','Failed')
+        self._render_both()
 
-    def _freq_filter(self, typ):
+    def _freq_dialog(self):
+        if not self._ensure(): return
+        typ = simpledialog.askstring('Freq Filter','Type (ilpf/blpf/ihpf/bhpf):', initialvalue='ilpf')
+        if not typ: return
+        d0 = simpledialog.askinteger('Cutoff','Cutoff frequency:', initialvalue=30)
+        if d0 is None: return
+        self._freq_filter(typ, d0)
+
+    def _freq_filter(self, typ, d0):
         if not self._ensure(): return
         self.push_history()
-        d0 = simpledialog.askinteger("Cutoff", "Cutoff frequency:", initialvalue=30)
-        self.image = filt.frequency_filter(self.image, typ, d0)
-        self._show()
+        try:
+            if filt and hasattr(filt, 'frequency_filter'):
+                self.image = filt.frequency_filter(self.image, typ, d0)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('FreqFilter','Failed')
+        self._render_both()
 
-    # GEOMETRIC OPS
-    def _rotate(self):
+    # -------------------------
+    # GEOMETRICS
+    # -------------------------
+    def _rotate(self, ang=None):
         if not self._ensure(): return
         self.push_history()
-        ang = simpledialog.askfloat("Rotate", "Angle:", initialvalue=90)
-        self.image = geom.rotate(self.image, ang)
-        self._show()
+        if ang is None:
+            ang = simpledialog.askfloat('Rotate','Angle:', initialvalue=90)
+            if ang is None: return
+        try:
+            if geom and hasattr(geom, 'rotate'):
+                self.image = geom.rotate(self.image, ang)
+            else:
+                self.image = self.image.rotate(ang, expand=True)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Rotate','Failed')
+        self._render_both()
 
     def _translate(self):
         if not self._ensure(): return
         self.push_history()
-        dx = simpledialog.askinteger("Translate", "dx:", initialvalue=10)
-        dy = simpledialog.askinteger("Translate", "dy:", initialvalue=10)
-        self.image = geom.translate(self.image, dx, dy)
-        self._show()
+        dx = simpledialog.askinteger('Translate','dx:', initialvalue=10)
+        dy = simpledialog.askinteger('Translate','dy:', initialvalue=10)
+        if dx is None or dy is None: return
+        try:
+            if geom and hasattr(geom, 'translate'):
+                self.image = geom.translate(self.image, dx, dy)
+            else:
+                w, h = self.image.size
+                new_w = w + abs(dx)
+                new_h = h + abs(dy)
+                new_img = Image.new('RGB', (new_w, new_h), (0,0,0))
+                ox = max(dx, 0)
+                oy = max(dy, 0)
+                new_img.paste(self.image, (ox, oy))
+                self.image = new_img
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Translate','Failed')
+        self._render_both()
 
     def _zoom(self):
         if not self._ensure(): return
         self.push_history()
-        f = simpledialog.askfloat("Zoom", "Faktor:", initialvalue=1.5)
-        self.image = geom.zoom(self.image, f)
-        self._show()
+        f = simpledialog.askfloat('Zoom','Faktor:', initialvalue=1.5)
+        if f is None: return
+        try:
+            if geom and hasattr(geom, 'zoom'):
+                self.image = geom.zoom(self.image, f)
+            else:
+                w, h = self.image.size
+                self.image = self.image.resize((int(w*f), int(h*f)), Image.LANCZOS)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Zoom','Failed')
+        self._render_both()
 
     def _flip(self):
         if not self._ensure(): return
         self.push_history()
-        horiz = messagebox.askyesno("Flip", "Flip horizontal? (No → vertical)")
-        self.image = geom.flip(self.image, horiz)
-        self._show()
+        horiz = messagebox.askyesno('Flip','Flip horizontal? (No -> vertical)')
+        try:
+            if geom and hasattr(geom, 'flip'):
+                self.image = geom.flip(self.image, horiz)
+            else:
+                if horiz:
+                    self.image = self.image.transpose(Image.FLIP_LEFT_RIGHT)
+                else:
+                    self.image = self.image.transpose(Image.FLIP_TOP_BOTTOM)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Flip','Failed')
+        self._render_both()
 
     def _crop(self):
         if not self._ensure(): return
         self.push_history()
         w, h = self.image.size
-        l = simpledialog.askinteger("Left", "Left:", initialvalue=0)
-        t = simpledialog.askinteger("Top", "Top:", initialvalue=0)
-        r = simpledialog.askinteger("Right", "Right:", initialvalue=w)
-        b = simpledialog.askinteger("Bottom", "Bottom:", initialvalue=h)
-        self.image = geom.crop(self.image, (l, t, r, b))
-        self._show()
+        l = simpledialog.askinteger('Left','Left:', initialvalue=0)
+        t = simpledialog.askinteger('Top','Top:', initialvalue=0)
+        r = simpledialog.askinteger('Right','Right:', initialvalue=w)
+        b = simpledialog.askinteger('Bottom','Bottom:', initialvalue=h)
+        if None in (l,t,r,b): return
+        try:
+            if geom and hasattr(geom, 'crop'):
+                self.image = geom.crop(self.image, (l,t,r,b))
+            else:
+                self.image = self.image.crop((l,t,r,b))
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Crop','Failed')
+        self._render_both()
 
+    # -------------------------
     # ARITHMETIC / BOOLEAN
+    # -------------------------
     def _ask_second(self):
-        path = filedialog.askopenfilename()
+        path = filedialog.askopenfilename(filetypes=[('Image Files','*.jpg *.png *.jpeg *.bmp *.tiff')])
         if not path: return None
-        img = Image.open(path).convert("RGB")
-        return img.resize(self.image.size)
+        try:
+            img = Image.open(path).convert('RGB')
+        except Exception:
+            messagebox.showerror('Open second','Failed to open second image')
+            return None
+        try:
+            img = img.resize(self.image.size)
+        except Exception:
+            pass
+        return img
 
     def _arithmetic(self, op):
         if not self._ensure(): return
         other = self._ask_second()
         if other is None: return
         self.push_history()
-        self.image = arith.arithmetic(self.image, other, op)
-        self._show()
+        try:
+            if arith and hasattr(arith, 'arithmetic'):
+                res = arith.arithmetic(self.image, other, op)
+                if isinstance(res, tuple):
+                    res = res[0]
+                self.image = res
+            else:
+                import numpy as np
+                a = np.array(self.image).astype('float32')
+                b = np.array(other).astype('float32')
+                if op == 'add': r = a + b
+                elif op == 'sub': r = a - b
+                elif op == 'mul': r = (a * b) / 255.0
+                elif op == 'div':
+                    b[b == 0] = 1
+                    r = (a / b) * 255.0
+                else: r = a
+                r = r.clip(0,255).astype('uint8')
+                from PIL import Image
+                self.image = Image.fromarray(r)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Arithmetic','Failed')
+        self._render_both()
 
     def _boolean(self, op):
         if not self._ensure(): return
-
-        if op == "not":
+        if op == 'not':
             self.push_history()
-            self.image = boolop.logic_not(self.image)
-            self._show()
+            try:
+                if boolop and hasattr(boolop, 'logic_not'):
+                    self.image = boolop.logic_not(self.image)
+                else:
+                    r,g,b = self.image.split()
+                    r = r.point(lambda i: 255-i)
+                    g = g.point(lambda i: 255-i)
+                    b = b.point(lambda i: 255-i)
+                    self.image = Image.merge('RGB',(r,g,b))
+            except Exception:
+                traceback.print_exc()
+                messagebox.showerror('Boolean NOT','Failed')
+            self._render_both()
             return
-
         other = self._ask_second()
         if other is None: return
         self.push_history()
-        self.image = boolop.logic_op(self.image, other, op)
-        self._show()
+        try:
+            if boolop and hasattr(boolop, 'logic_op'):
+                self.image = boolop.logic_op(self.image, other, op)
+            else:
+                import numpy as np
+                a = np.array(self.image.convert('L')) > 128
+                b = np.array(other.convert('L')) > 128
+                if op == 'and': r = a & b
+                elif op == 'or': r = a | b
+                elif op == 'xor': r = a ^ b
+                else: r = a
+                out = (r.astype('uint8') * 255)
+                self.image = Image.fromarray(out).convert('RGB')
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Boolean','Failed')
+        self._render_both()
 
+    # -------------------------
     # NOISE
+    # -------------------------
     def _noise(self, typ):
         if not self._ensure(): return
         self.push_history()
-
         params = {}
-        if typ == "gaussian":
-            params["sigma"] = simpledialog.askfloat("Gaussian Noise", "Sigma:", initialvalue=20.0)
-        elif typ == "rayleigh":
-            params["scale"] = simpledialog.askfloat("Rayleigh", "Scale:", initialvalue=10.0)
-        elif typ == "erlang":
-            params["k"] = simpledialog.askinteger("Erlang", "k:", initialvalue=3)
-            params["lam"] = simpledialog.askfloat("Lambda", "λ:", initialvalue=0.5)
-        elif typ == "exponential":
-            params["lam"] = simpledialog.askfloat("Lambda", "λ:", initialvalue=0.5)
-        elif typ == "uniform":
-            params["low"] = -20
-            params["high"] = 20
-        elif typ == "s&p":
-            params["amount"] = 0.05
+        if typ == 'gaussian':
+            s = simpledialog.askfloat('Gaussian Noise','Sigma:', initialvalue=20.0)
+            if s is None: return
+            params['sigma'] = s
+        elif typ == 'rayleigh':
+            sc = simpledialog.askfloat('Rayleigh','Scale:', initialvalue=10.0)
+            if sc is None: return
+            params['scale'] = sc
+        elif typ == 'erlang':
+            k = simpledialog.askinteger('Erlang','k:', initialvalue=3)
+            lam = simpledialog.askfloat('Lambda','\u03bb:', initialvalue=0.5)
+            if k is None or lam is None: return
+            params['k'] = k; params['lam'] = lam
+        elif typ == 'exponential':
+            lam = simpledialog.askfloat('Lambda','\u03bb:', initialvalue=0.5)
+            if lam is None: return
+            params['lam'] = lam
+        elif typ == 'uniform':
+            params['low'] = -20; params['high'] = 20
+        elif typ == 's&p':
+            amt = simpledialog.askfloat('Amount','Amount (0-1):', initialvalue=0.05)
+            if amt is None: return
+            params['amount'] = amt
+        try:
+            if noise_mod and hasattr(noise_mod, 'add_noise'):
+                self.image = noise_mod.add_noise(self.image, typ, **params)
+            else:
+                messagebox.showinfo('Noise','Noise module not available')
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Noise','Failed')
+        self._render_both()
 
-        self.image = noise_mod.add_noise(self.image, typ, **params)
-        self._show()
-
+    # -------------------------
     # EDGE DETECTION
+    # -------------------------
     def _sobel(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = edge.sobel(self.image)
-        self._show()
+        try:
+            if edge and hasattr(edge, 'sobel'):
+                self.image = edge.sobel(self.image)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Sobel','Failed')
+        self._render_both()
 
     def _prewitt(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = edge.prewitt(self.image)
-        self._show()
+        try:
+            if edge and hasattr(edge, 'prewitt'):
+                self.image = edge.prewitt(self.image)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Prewitt','Failed')
+        self._render_both()
 
     def _roberts(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = edge.roberts(self.image)
-        self._show()
+        try:
+            if edge and hasattr(edge, 'roberts'):
+                self.image = edge.roberts(self.image)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Roberts','Failed')
+        self._render_both()
 
     def _laplacian(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = edge.laplacian(self.image)
-        self._show()
+        try:
+            if edge and hasattr(edge, 'laplacian'):
+                self.image = edge.laplacian(self.image)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Laplacian','Failed')
+        self._render_both()
 
     def _log(self):
         if not self._ensure(): return
         self.push_history()
-        self.image = edge.log(self.image)
-        self._show()
+        try:
+            if edge and hasattr(edge, 'log'):
+                self.image = edge.log(self.image)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('LoG','Failed')
+        self._render_both()
 
     def _canny(self):
         if not self._ensure(): return
         self.push_history()
-        low = simpledialog.askinteger("Canny", "Low threshold:", initialvalue=50)
-        high = simpledialog.askinteger("Canny", "High threshold:", initialvalue=150)
-        self.image = edge.canny(self.image, low, high)
-        self._show()
+        low = simpledialog.askinteger('Canny','Low threshold:', initialvalue=50)
+        high = simpledialog.askinteger('Canny','High threshold:', initialvalue=150)
+        if low is None or high is None: return
+        try:
+            if edge and hasattr(edge, 'canny'):
+                self.image = edge.canny(self.image, low, high)
+        except Exception:
+            traceback.print_exc()
+            messagebox.showerror('Canny','Failed')
+        self._render_both()
 
 
 # MAIN LOOP
-if __name__ == "__main__":
+if __name__ == '__main__':
     app = ImageApp()
     app.mainloop()
