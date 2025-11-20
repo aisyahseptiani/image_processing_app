@@ -1,13 +1,3 @@
-# main.py
-"""
-Image Processing App - Modern Burgundy (CustomTkinter) - Updated
-- Right-side header buttons: Undo (⎌), Redo (⤴), Save (💾)
-- Sidebar uses dropdown-style submenus (submenu appears immediately under the menu button;
-  other submenus collapse automatically)
-- Preserves original functionality, with safe fallbacks if ops modules are unavailable
-- Uses customtkinter if available; falls back to standard tkinter styling if not.
-"""
-
 import os
 import traceback
 import tkinter as tk
@@ -73,7 +63,7 @@ def make_tk_image(pil_img, max_w, max_h):
 class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Image Processing App - Burgundy (Updated)")
+        self.title("Image Processing App")
         self.geometry("1400x860")
         self.minsize(1100, 700)
 
