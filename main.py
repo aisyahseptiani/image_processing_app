@@ -1,10 +1,3 @@
-"""
-main.py - Image Processing App (single-file)
-- Dropdown/dialog based submenus for smoothing, sharpening, colouring, etc.
-- Preserves original features: undo/redo/history, save, convolution, fft placeholders.
-- Uses PIL, numpy, tkinter. Optional customtkinter if available (fallback to tkinter).
-"""
-
 import os
 import traceback
 import tkinter as tk
@@ -106,7 +99,7 @@ def pseudo_color(img: Image.Image):
 class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Image Processing App - Updated")
+        self.title("Image Processing App - 2025")
         self.geometry("1400x860")
         self.minsize(1100,700)
 
@@ -150,7 +143,7 @@ class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
         header_btns = ctk.CTkFrame(header, fg_color=BURGUNDY) if USE_CTK else tk.Frame(header, bg=BURGUNDY)
         header_btns.pack(side="right", padx=12)
 
-        undo_sym, redo_sym, save_sym = "⎌", "⎌⤴", "💾"
+        undo_sym, redo_sym, save_sym = "⎌", "⤴", "💾"
         btn_opts = {"fg_color": BURGUNDY_LIGHT, "hover_color": "#7C3B4A"} if USE_CTK else {}
 
         undo_btn = ctk.CTkButton(header_btns, text=f"{undo_sym} Undo", command=self.undo, width=90, **btn_opts) if USE_CTK else tk.Button(header_btns, text=f"{undo_sym} Undo", command=self.undo, bg=BURGUNDY_LIGHT, fg=TEXT)
@@ -193,23 +186,22 @@ class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
 
         # BASIC OPS
         basic_sub = add_menu("Basic Ops")
-        _pack_btn(basic_sub, "Arithmetic (Add/Sub/Mul/Div)", lambda: self._select_arithmetic())
-        _pack_btn(basic_sub, "Boolean (NOT/AND/OR/XOR)", lambda: self._boolean_dialog())
-        _pack_btn(basic_sub, "Geometrics (Translate/Rotate/Zoom/Flip/Crop)", lambda: messagebox.showinfo("Geometrics","Gunakan submenu Geometrics di sini."))
-        _pack_btn(basic_sub, "Thresholding (Binary)", self._thresholding)
+        _pack_btn(basic_sub, "Arithmetic", lambda: self._select_arithmetic())
+        _pack_btn(basic_sub, "Boolean", lambda: self._boolean_dialog())
+        _pack_btn(basic_sub, "Thresholding", self._thresholding)
         _pack_btn(basic_sub, "Convolution (3x3)", self._convolution)
         _pack_btn(basic_sub, "Fourier Transform", self._fft)
-        _pack_btn(basic_sub, "Colouring (Binary/Grayscale/RGB/HSV/CMY/YUV/YIQ/Pseudo)", lambda: self._colouring_dialog())
+        _pack_btn(basic_sub, "Colouring", lambda: self._colouring_dialog())
 
         # ENHANCEMENT
         enh_sub = add_menu("Enhancement")
         _pack_btn(enh_sub, "Brightness", self._brightness)
         _pack_btn(enh_sub, "Contrast", self._contrast)
         _pack_btn(enh_sub, "Histogram Equalization", self._histeq)
-        _pack_btn(enh_sub, "Smoothing (Spatial: Lowpass / Median)", lambda: self._smoothing_dialog(spatial=True))
-        _pack_btn(enh_sub, "Smoothing (Frequency: ILPF / BLPF)", lambda: self._smoothing_dialog(spatial=False))
-        _pack_btn(enh_sub, "Sharpening (Spatial: Highpass / Highboost)", lambda: self._sharpening_dialog(spatial=True))
-        _pack_btn(enh_sub, "Sharpening (Frequency: IHPF / BHPF)", lambda: self._sharpening_dialog(spatial=False))
+        _pack_btn(enh_sub, "Smoothing (Spatial)", lambda: self._smoothing_dialog(spatial=True))
+        _pack_btn(enh_sub, "Smoothing (Frequency)", lambda: self._smoothing_dialog(spatial=False))
+        _pack_btn(enh_sub, "Sharpening (Spatial)", lambda: self._sharpening_dialog(spatial=True))
+        _pack_btn(enh_sub, "Sharpening (Frequency)", lambda: self._sharpening_dialog(spatial=False))
 
         # NOISE
         noise_sub = add_menu("Noise")
@@ -218,7 +210,7 @@ class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
         _pack_btn(noise_sub, "Erlang Noise", lambda: self._noise('erlang'))
         _pack_btn(noise_sub, "Exponential Noise", lambda: self._noise('exponential'))
         _pack_btn(noise_sub, "Uniform Noise", lambda: self._noise('uniform'))
-        _pack_btn(noise_sub, "Impulse Noise (formerly S&P)", lambda: self._noise('impulse'))
+        _pack_btn(noise_sub, "Impulse Noise", lambda: self._noise('impulse'))
 
         # EDGE
         edge_sub = add_menu("Edge Detection")
