@@ -35,7 +35,7 @@ except Exception:
     # traceback.print_exc()
 
 # Optional sample path (if you want to preload an image)
-SAMPLE_IMAGE_PATH = "/mnt/data/a2f32ddc-053f-4218-8604-6fb1d8adca86.png"
+SAMPLE_IMAGE_PATH = "/mnt/data/a2f32ddc-053f-4218-8604-6fb1d8adca86.png"  
 
 # Colors (for CTk / fallback)
 BURGUNDY = "#4A1F2D"
@@ -427,28 +427,31 @@ class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
     # BASIC OPS implementations (and wrappers)
     # -------------------------
     def _select_arithmetic(self):
-        if not self._ensure(): 
+        if not self._ensure():
             return
 
-        win = ctk.CTkToplevel(self)
-        win.title("Arithmetic Operation")
-        win.geometry("300x180")
+        win = tk.Toplevel(self)
+        win.title("Arithmetic")
         win.resizable(False, False)
+        win.geometry("220x130")
+        win.grab_set()
 
-        ctk.CTkLabel(win, text="Select Arithmetic Operation", font=("Segoe UI", 14, "bold")).pack(pady=10)
+        tk.Label(win, text="Choose Operation:").pack(pady=5)
 
         options = ["add", "sub", "mul", "div"]
-        selected = ctk.StringVar(value=options[0])
+        selected = tk.StringVar(value=options[0])
 
-        dropdown = ctk.CTkOptionMenu(win, values=options, variable=selected)
-        dropdown.pack(pady=10)
+        # Dropdown sederhana Tkinter
+        dropdown = tk.OptionMenu(win, selected, *options)
+        dropdown.pack(pady=5)
 
         def apply():
             op = selected.get()
             win.destroy()
             self._arithmetic(op)
 
-        ctk.CTkButton(win, text="Apply", command=apply).pack(pady=10)
+        tk.Button(win, text="OK", width=8, command=apply).pack(side="left", padx=20, pady=10)
+        tk.Button(win, text="Cancel", width=8, command=win.destroy).pack(side="right", padx=20, pady=10)
 
 
     def _arithmetic(self, op):
@@ -1065,20 +1068,40 @@ class ImageApp(ctk.CTk if USE_CTK else tk.Tk):
         self._render_both()
 
     def _zoom(self):
-        if not self._ensure(): return
-        self.push_history()
-        f = simpledialog.askfloat('Zoom','Factor:', initialvalue=1.5)
-        if f is None: return
+        if self.image is None:
+            messagebox.showwarning("No Image", "Please load an image first.")
+            return
+
+        # ambil faktor zoom
+        factor = simpledialog.askfloat(
+            "Zoom",
+            "Input zoom factor ( >1 = zoom in, <1 = zoom out )",
+            minvalue=0.1,
+            maxvalue=10.0
+        )
+        if not factor:
+            return
+
         try:
-            if geom and hasattr(geom, 'zoom'):
-                self.image = geom.zoom(self.image, f)
-            else:
-                w,h = self.image.size
-                self.image = self.image.resize((int(w*f), int(h*f)), Image.LANCZOS)
-        except Exception:
-            traceback.print_exc()
-            messagebox.showerror('Zoom','Failed')
-        self._render_both()
+            w, h = self.image.size
+            new_w = int(w * factor)
+            new_h = int(h * factor)
+
+            # lakukan resize zoom
+            zoomed = self.image.resize((new_w, new_h), Image.LANCZOS)
+
+            # simpan ke history
+            self.history.append(self.image.copy())
+            self.future.clear()
+
+            self.image = zoomed
+            self._render_both()
+
+            self.status.configure(text=f"Zoom applied (factor: {factor})")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Zoom failed:\n{str(e)}")
+
 
     def _flip(self):
         if not self._ensure(): return
